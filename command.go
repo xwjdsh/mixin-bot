@@ -3,8 +3,11 @@ package bot
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
+	"net/http"
 	"strings"
 
 	"github.com/fox-one/mixin-sdk-go"
@@ -15,6 +18,7 @@ var commands = []Command{
 	echoCommandInstance,
 	helpCommandInstance,
 	priceCommandInstance,
+	poemCommandInstance,
 }
 
 type Command interface {
@@ -154,4 +158,59 @@ func (c *priceCommand) Execute(ctx context.Context, s *Session, msg *mixin.Messa
 		s.Command = ""
 	}
 	return reply, nil
+}
+
+var poemCommandInstance = &poemCommand{
+	generalCommand{
+		name: "/poem",
+		desc: "Return an ancient poem randomly.",
+	},
+}
+
+type poemCommand struct {
+	generalCommand
+}
+
+func (c *poemCommand) Execute(ctx context.Context, s *Session, msg *mixin.MessageView) (*mixin.MessageRequest, error) {
+	resp, err := http.Get("https://v1.hitokoto.cn/?c=i")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		ID         int    `json:"id"`
+		UUID       string `json:"uuid"`
+		Hitokoto   string `json:"hitokoto"`
+		Type       string `json:"type"`
+		From       string `json:"from"`
+		FromWho    string `json:"from_who"`
+		Creator    string `json:"creator"`
+		CreatorUID int    `json:"creator_uid"`
+		Reviewer   int    `json:"reviewer"`
+		CommitFrom string `json:"commit_from"`
+		CreatedAt  string `json:"created_at"`
+		Length     int    `json:"length"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+
+	replyData := fmt.Sprintf("%s\n%s 《%s》", result.Hitokoto, result.FromWho, result.From)
+	id, _ := uuid.FromString(msg.MessageID)
+	reply := &mixin.MessageRequest{
+		ConversationID: msg.ConversationID,
+		RecipientID:    msg.UserID,
+		MessageID:      uuid.NewV5(id, "reply").String(),
+		Category:       msg.Category,
+		Data:           base64.StdEncoding.EncodeToString([]byte(replyData)),
+	}
+
+	s.Command = ""
+	return reply, err
 }
