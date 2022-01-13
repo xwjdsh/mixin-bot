@@ -23,10 +23,6 @@ type Bot struct {
 var commandMap = map[string]Command{}
 
 func init() {
-	commands := []Command{
-		&echoCommand{generalCommand{name: "/echo", step: 1}},
-	}
-
 	for _, command := range commands {
 		commandMap[command.Name()] = command
 	}
