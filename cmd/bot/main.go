@@ -9,7 +9,7 @@ import (
 
 	"github.com/fox-one/mixin-sdk-go"
 
-	bot "github.com/xwjdsh/mixin-robot"
+	bot "github.com/xwjdsh/mixin-bot"
 )
 
 var (
