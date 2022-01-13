@@ -1,11 +1,17 @@
 package bot
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io/ioutil"
 	"net/http"
 	"strings"
+
+	"github.com/fox-one/mixin-sdk-go"
 )
+
+var assetNotFoundError = errors.New("bot: asset not found")
 
 type SwapAsset struct {
 	ID     string `json:"id"`
@@ -45,4 +51,13 @@ func initAssets() (map[string]string, error) {
 	}
 
 	return supportedAssets, nil
+}
+
+func (b *Bot) getAssetBySymbol(ctx context.Context, symbol string) (*mixin.Asset, error) {
+	symbol = strings.ToUpper(symbol)
+	if assetID, found := b.supportedAssets[symbol]; found {
+		return b.client.ReadAsset(ctx, assetID)
+	}
+
+	return nil, assetNotFoundError
 }

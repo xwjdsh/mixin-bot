@@ -70,11 +70,12 @@ func (b *Bot) handleMessage(ctx context.Context, msg *mixin.MessageView, userID 
 	}
 	msg.Data = string(data)
 
+	ctx = context.WithValue(ctx, botContextKey{}, b)
 	if tmp, ok := b.sessionMap.Load(msg.UserID); ok {
 		session := tmp.(*Session)
 		command, ok := b.commands[session.Command]
 		if ok {
-			reply, err := command.Execute(session, msg)
+			reply, err := command.Execute(ctx, session, msg)
 			return b.handleCommandResult(ctx, session, reply, err)
 		} else {
 			b.sessionMap.Delete(msg.UserID)
@@ -93,7 +94,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *mixin.MessageView, userID 
 			msg.Data = data
 			session := &Session{Command: command.Name(), UserID: msg.UserID}
 			b.sessionMap.Store(msg.UserID, session)
-			reply, err := command.Execute(session, msg)
+			reply, err := command.Execute(ctx, session, msg)
 			return b.handleCommandResult(ctx, session, reply, err)
 		}
 	}
@@ -123,12 +124,4 @@ func (b *Bot) handleCommandResult(ctx context.Context, session *Session, reply *
 	}
 
 	return nil
-}
-
-func (b *Bot) getAssetBySymbol(ctx context.Context, symbol string) (*mixin.Asset, error) {
-	symbol = strings.ToUpper(symbol)
-	if assetID, found := b.supportedAssets[symbol]; found {
-		return b.client.ReadAsset(ctx, assetID)
-	}
-	return nil, fmt.Errorf("Can't find asset (%s)", symbol)
 }

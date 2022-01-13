@@ -1,7 +1,9 @@
 package bot
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -12,13 +14,16 @@ import (
 var commands = []Command{
 	echoCommandInstance,
 	helpCommandInstance,
+	priceCommandInstance,
 }
 
 type Command interface {
 	Name() string
 	Desc() string
-	Execute(s *Session, msg *mixin.MessageView) (*mixin.MessageRequest, error)
+	Execute(context.Context, *Session, *mixin.MessageView) (*mixin.MessageRequest, error)
 }
+
+type botContextKey struct{}
 
 type generalCommand struct {
 	name string
@@ -37,15 +42,15 @@ func (c *generalCommand) Desc() string {
 var echoCommandInstance = &echoCommand{
 	generalCommand{
 		name: "/echo",
-		step: 1,
 		desc: "Echo message, it can be in the form of '/echo content', or send '/echo' first and then content.",
-	}}
+	},
+}
 
 type echoCommand struct {
 	generalCommand
 }
 
-func (c *echoCommand) Execute(s *Session, msg *mixin.MessageView) (*mixin.MessageRequest, error) {
+func (c *echoCommand) Execute(ctx context.Context, s *Session, msg *mixin.MessageView) (*mixin.MessageRequest, error) {
 	data := msg.Data
 	empty := s.CurrentStep == 0 && msg.Data == ""
 	if empty {
@@ -72,13 +77,14 @@ var helpCommandInstance = &helpCommand{
 	generalCommand{
 		name: "/help",
 		desc: "List all available commands.",
-	}}
+	},
+}
 
 type helpCommand struct {
 	generalCommand
 }
 
-func (c *helpCommand) Execute(s *Session, msg *mixin.MessageView) (*mixin.MessageRequest, error) {
+func (c *helpCommand) Execute(ctx context.Context, s *Session, msg *mixin.MessageView) (*mixin.MessageRequest, error) {
 	id, _ := uuid.FromString(msg.MessageID)
 	result := []string{}
 	for _, command := range commands {
@@ -95,5 +101,57 @@ func (c *helpCommand) Execute(s *Session, msg *mixin.MessageView) (*mixin.Messag
 	}
 
 	s.Command = ""
+	return reply, nil
+}
+
+var priceCommandInstance = &priceCommand{
+	generalCommand{
+		name: "/price",
+		desc: "Query the prices of symbols.",
+	},
+}
+
+type priceCommand struct {
+	generalCommand
+}
+
+func (c *priceCommand) Execute(ctx context.Context, s *Session, msg *mixin.MessageView) (*mixin.MessageRequest, error) {
+	data := ""
+	empty := s.CurrentStep == 0 && msg.Data == ""
+	if empty {
+		data = "Waiting to receive symbols..."
+		s.CurrentStep += 1
+	} else {
+		result := []string{}
+		bot := ctx.Value(botContextKey{}).(*Bot)
+		for _, str := range strings.Split(msg.Data, " ") {
+			symbol := strings.ToUpper(strings.TrimSpace(str))
+			assets, err := bot.getAssetBySymbol(ctx, symbol)
+			if errors.Is(err, assetNotFoundError) {
+				data = fmt.Sprintf("Symbol(%s) not found.", symbol)
+				result = nil
+				break
+			} else if err != nil {
+				return nil, err
+			}
+			result = append(result, fmt.Sprintf("%-10s $%s", symbol, assets.PriceUSD))
+		}
+		if len(result) != 0 {
+			data = strings.Join(result, "\n")
+		}
+	}
+
+	id, _ := uuid.FromString(msg.MessageID)
+	reply := &mixin.MessageRequest{
+		ConversationID: msg.ConversationID,
+		RecipientID:    msg.UserID,
+		MessageID:      uuid.NewV5(id, "reply").String(),
+		Category:       msg.Category,
+		Data:           base64.StdEncoding.EncodeToString([]byte(data)),
+	}
+
+	if !empty {
+		s.Command = ""
+	}
 	return reply, nil
 }
