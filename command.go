@@ -12,6 +12,7 @@ import (
 
 	"github.com/fox-one/mixin-sdk-go"
 	"github.com/gofrs/uuid"
+	"github.com/shopspring/decimal"
 )
 
 var commands = []Command{
@@ -19,6 +20,7 @@ var commands = []Command{
 	helpCommandInstance,
 	priceCommandInstance,
 	poemCommandInstance,
+	swapCommandInstance,
 }
 
 type Command interface {
@@ -92,7 +94,7 @@ func (c *helpCommand) Execute(ctx context.Context, s *Session, msg *mixin.Messag
 	id, _ := uuid.FromString(msg.MessageID)
 	result := []string{}
 	for _, command := range commands {
-		result = append(result, fmt.Sprintf("%-10v%s", command.Name(), command.Desc()))
+		result = append(result, fmt.Sprintf("%-10s%s", command.Name(), command.Desc()))
 	}
 
 	data := base64.StdEncoding.EncodeToString([]byte(strings.Join(result, "\n")))
@@ -111,6 +113,7 @@ func (c *helpCommand) Execute(ctx context.Context, s *Session, msg *mixin.Messag
 var priceCommandInstance = &priceCommand{
 	generalCommand{
 		name: "/price",
+		step: 1,
 		desc: "Query the prices of symbols.",
 	},
 }
@@ -119,30 +122,69 @@ type priceCommand struct {
 	generalCommand
 }
 
+type priceData struct {
+	symbols []*priceSymbol
+}
+
+type priceSymbol struct {
+	symbol   string
+	name     string
+	priceUSD decimal.Decimal
+}
+
 func (c *priceCommand) Execute(ctx context.Context, s *Session, msg *mixin.MessageView) (*mixin.MessageRequest, error) {
-	data := ""
-	empty := s.CurrentStep == 0 && msg.Data == ""
-	if empty {
-		data = "Waiting to receive symbols..."
-		s.CurrentStep += 1
-	} else {
-		result := []string{}
-		bot := ctx.Value(botContextKey{}).(*Bot)
+	var replyData string
+	pd := &priceData{}
+	bot := ctx.Value(botContextKey{}).(*Bot)
+	switch s.CurrentStep {
+	case 0:
 		for _, str := range strings.Split(msg.Data, " ") {
 			symbol := strings.ToUpper(strings.TrimSpace(str))
-			assets, err := bot.getAssetBySymbol(ctx, symbol)
+			asset, err := bot.getAssetBySymbol(ctx, symbol)
 			if errors.Is(err, assetNotFoundError) {
-				data = fmt.Sprintf("Symbol(%s) not found.", symbol)
-				result = nil
+				replyData = fmt.Sprintf("Symbol(%s) not found.", symbol)
+				pd.symbols = nil
 				break
 			} else if err != nil {
 				return nil, err
 			}
-			result = append(result, fmt.Sprintf("%-10s $%s", symbol, assets.PriceUSD))
+			pd.symbols = append(pd.symbols, &priceSymbol{symbol: symbol, name: asset.Name, priceUSD: asset.PriceUSD})
 		}
-		if len(result) != 0 {
-			data = strings.Join(result, "\n")
+		if len(pd.symbols) != 0 {
+			replyData = "The base currence defaults to USD, enter 'Y' to ensure or enter the base coin you want (such as 'BTC'), enter 'N' to exit."
 		}
+		s.Data = pd
+		s.CurrentStep += 1
+	case 1:
+		pd = s.Data.(*priceData)
+		if input := strings.ToUpper(msg.Data); input == "Y" {
+			tmp := []string{}
+			for _, item := range pd.symbols {
+				tmp = append(tmp, fmt.Sprintf("1 %s(%s) = %s USD", item.symbol, item.name, item.priceUSD))
+			}
+			replyData = strings.Join(tmp, "\n")
+			s.CurrentStep += 1
+			break
+		} else if input == "N" {
+			s.Command = ""
+			return nil, nil
+		}
+
+		symbol := strings.ToUpper(msg.Data)
+		assets, err := bot.getAssetBySymbol(ctx, symbol)
+		if errors.Is(err, assetNotFoundError) {
+			replyData = fmt.Sprintf("Symbol(%s) not found.", symbol)
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		tmp := []string{}
+		for _, item := range pd.symbols {
+			tmp = append(tmp, fmt.Sprintf("1 %s(%s) ≈ %s %s(%s)", item.symbol, item.name, item.priceUSD.Div(assets.PriceUSD), assets.Symbol, assets.Name))
+		}
+		replyData = strings.Join(tmp, "\n")
+		s.CurrentStep += 1
 	}
 
 	id, _ := uuid.FromString(msg.MessageID)
@@ -151,12 +193,13 @@ func (c *priceCommand) Execute(ctx context.Context, s *Session, msg *mixin.Messa
 		RecipientID:    msg.UserID,
 		MessageID:      uuid.NewV5(id, "reply").String(),
 		Category:       msg.Category,
-		Data:           base64.StdEncoding.EncodeToString([]byte(data)),
+		Data:           base64.StdEncoding.EncodeToString([]byte(replyData)),
 	}
 
-	if !empty {
+	if s.CurrentStep > c.step {
 		s.Command = ""
 	}
+
 	return reply, nil
 }
 
@@ -213,4 +256,54 @@ func (c *poemCommand) Execute(ctx context.Context, s *Session, msg *mixin.Messag
 
 	s.Command = ""
 	return reply, err
+}
+
+var swapCommandInstance = &swapCommand{
+	generalCommand{
+		name: "/swap",
+		desc: "Exchange your coin.",
+	},
+}
+
+type swapCommand struct {
+	generalCommand
+}
+
+func (c *swapCommand) Execute(ctx context.Context, s *Session, msg *mixin.MessageView) (*mixin.MessageRequest, error) {
+	var replyData string
+	category := mixin.MessageCategoryPlainText
+	bot := ctx.Value(botContextKey{}).(*Bot)
+	switch s.CurrentStep {
+	case 0:
+		symbol := strings.ToUpper(strings.TrimSpace(msg.Data))
+		asset, err := bot.getAssetBySymbol(ctx, symbol)
+		if errors.Is(err, assetNotFoundError) {
+			replyData = fmt.Sprintf("Symbol(%s) not found.", symbol)
+			s.Command = ""
+		}
+		if err != nil {
+			return nil, err
+		}
+		s.Data = asset
+		s.CurrentStep += 1
+		replyData = fmt.Sprintf(`[{
+    "label": "Swap to %s",
+    "color": "#00BBFF",
+    "action": "mixin://transfer/%s"
+ 	}]`, asset.Symbol, bot.client.ClientID)
+		category = mixin.MessageCategoryAppButtonGroup
+	case 1:
+		s.Command = ""
+		return bot.handleTransferMessage(ctx, msg, s)
+	}
+
+	id, _ := uuid.FromString(msg.MessageID)
+	reply := &mixin.MessageRequest{
+		ConversationID: msg.ConversationID,
+		RecipientID:    msg.UserID,
+		MessageID:      uuid.NewV5(id, "reply").String(),
+		Category:       category,
+		Data:           base64.StdEncoding.EncodeToString([]byte(replyData)),
+	}
+	return reply, nil
 }

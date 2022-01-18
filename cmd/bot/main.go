@@ -14,10 +14,14 @@ import (
 
 var (
 	config = flag.String("config", "keystore.json", "keystore file path")
+	pin    = flag.String("pin", "", "PIN value")
 )
 
 func main() {
 	flag.Parse()
+	if *pin == "" {
+		log.Panicln("pin not set")
+	}
 
 	f, err := os.Open(*config)
 	if err != nil {
@@ -29,7 +33,7 @@ func main() {
 		log.Panicln(err)
 	}
 
-	b, err := bot.Init(&store)
+	b, err := bot.Init(&store, *pin)
 	if err != nil {
 		log.Panicln(err)
 	}
